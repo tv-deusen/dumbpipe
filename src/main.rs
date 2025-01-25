@@ -10,7 +10,10 @@ use std::{
     io,
     net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
     str::FromStr,
+    fs::{self, OpenOptions},
 };
+use std::vec::Vec;
+use std::io::Write;
 use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt},
     select,
@@ -212,15 +215,44 @@ async fn copy_from_quinn(
     }
 }
 
+fn check_for_secret_key(key: &SecretKey) -> anyhow::Result<()> {
+    let home_dir = dirs::home_dir().expect("Could not find home directory");
+    let profile_path = home_dir.join(".profile");
+
+    let mut contents = String::new();
+    if profile_path.exists() {
+        contents = fs::read_to_string(&profile_path)?;
+    }
+
+    if contents.contains(&"export IROH_SECRET=".to_string()) {
+        println!("Secret already set in .profile");
+        let lines = contents.lines();
+        for line in lines {
+            if line.contains(&"export IROH_SECRET=".to_string()) {
+                let secret = line.split("=").collect::<Vec<&str>>()[1];
+                std::env::set_var("IROH_SECRET", secret);
+            }
+        }
+    } else {
+        let mut file = OpenOptions::new().append(true).create(true).open(&profile_path)?;
+        // let key_str = String::from();
+        let var_export = format!("export IROH_SECRET={}\n", key.to_string());
+        file.write_all(var_export.as_bytes())?;
+        std::env::set_var("IROH_SECRET", key.to_string());
+    }
+    Ok(())
+}
+
 /// Get the secret key or generate a new one.
 ///
 /// Print the secret key to stderr if it was generated, so the user can save it.
 fn get_or_create_secret() -> anyhow::Result<SecretKey> {
+    let key = SecretKey::generate(rand::rngs::OsRng);
+    check_for_secret_key(&key)?;
     match std::env::var("IROH_SECRET") {
         Ok(secret) => SecretKey::from_str(&secret).context("invalid secret"),
         Err(_) => {
-            let key = SecretKey::generate(rand::rngs::OsRng);
-            eprintln!("using secret key {}", key);
+            eprintln!("Unable to get key");
             Ok(key)
         }
     }
